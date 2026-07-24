@@ -1,6 +1,9 @@
 import nextPlugin from "@next/eslint-plugin-next";
 import nextParser from "eslint-config-next/parser.js";
 import tsParser from "@typescript-eslint/parser";
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 const config = [
   {
