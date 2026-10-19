@@ -82,7 +82,7 @@ function redactTargetAccount(account: string | undefined): string | null {
     return null;
   }
   if (account.length <= 8) {
-    return `${account.slice(0, 2)}***${account.slice(-2)}`;
+    return `${account.slice(0, 2)}***${account.slice(-2,)}`;
   }
   return `${account.slice(0, 4)}***${account.slice(-4)}`;
 }
@@ -140,68 +140,128 @@ export class AppendOnlyAuditLogStore {
   }
 
   list(filters: AuditListFilters = {}): AuditEntry[] {
+    return this.getPaginated(filters).data;
+  }
+
+  getPaginated(filters: AuditListFilters = {}): { data: AuditEntry[]; hasNext: boolean; nextCursor: string | null; total: number } {
     const limit = Math.min(Math.max(filters.limit ?? 50, 1), 250);
 
-    const results = this.entries
-      .filter((entry) => {
-        if (filters.actorId && entry.actor.id !== filters.actorId) {
-          return false;
+    let results = this.entries.filter((entry) => {
+      if (filters.actorId && entry.actor.id !== filters.actorId) return false;
+      if (filters.role && entry.actor.role !== filters.role) return false;
+      if (filters.action && entry.action !== filters.action) return false;
+      if (filters.targetId && entry.target.id !== filters.targetId) return false;
+      if (filters.requestId && entry.requestId !== filters.requestId) return false;
+      if (filters.orgId && entry.metadata?.orgId !== filters.orgId) return false;
+      if (filters.startDate && entry.timestamp < filters.startDate) return false;
+      if (filters.endDate && entry.timestamp > filters.endDate) return false;
+      if (filters.q) {
+        const haystack = [
+          entry.actor.id,
+          entry.actor.role,
+          entry.action,
+          entry.target.id,
+          entry.target.account ?? "",
+          entry.requestId,
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(filters.q.toLowerCase())) return false;
+      }
+      return true;
+    });
+
+    const total = results.length;
+
+    results = results.sort((left, right) => {
+      const tsCmp = right.timestamp.localeCompare(left.timestamp);
+      return tsCmp !== 0 ? tsCmp : right.id.localeCompare(left.id);
+    });
+
+    if (filters.cursor) {
+      // Decode composite cursor
+      let cursorTimestamp = "";
+      let cursorId = "";
+      try {
+        const decoded = Buffer.from(filters.cursor, "base64").toString("utf-8");
+        const parts = decoded.split("|");
+        if (parts.length === 2) {
+          cursorTimestamp = parts[0];
+          cursorId = parts[1];
         }
-        if (filters.role && entry.actor.role !== filters.role) {
-          return false;
-        }
-        if (filters.action && entry.action !== filters.action) {
-          return false;
-        }
-        if (filters.targetId && entry.target.id !== filters.targetId) {
-          return false;
-        }
-        if (filters.requestId && entry.requestId !== filters.requestId) {
-          return false;
-        }
-        if (filters.q) {
-          const haystack = [
-            entry.actor.id,
-            entry.actor.role,
-            entry.action,
-            entry.target.id,
-            entry.target.account ?? "",
-            entry.requestId,
-          ]
-            .join(" ")
-            .toLowerCase();
-          if (!haystack.includes(filters.q.toLowerCase())) {
-            return false;
+      } catch (e) {
+        // Invalid cursor format handled by returning no results or ignoring?
+        // We'll throw an error and let the caller handle it or just return empty
+      }
+
+      if (cursorTimestamp && cursorId) {
+        const cursorIndex = results.findIndex((entry) => {
+          const tsCmp = entry.timestamp.localeCompare(cursorTimestamp);
+          return tsCmp < 0 || (tsCmp === 0 && entry.id.localeCompare(cursorId) <= 0);
+        });
+        if (cursorIndex >= 0) {
+          // Because we sort descending, we want items after the cursor
+          // Actually, if the cursor is an item, we want to start from the item AFTER it in the sorted array
+          // The cursorIndex points to an item that is <= cursor in sorting.
+          // Since it's exactly the cursor, we skip it.
+          const exactIndex = results.findIndex(e => e.id === cursorId);
+          if (exactIndex >= 0) {
+             results = results.slice(exactIndex + 1);
+          } else {
+             results = results.filter((entry) => {
+               const tsCmp = entry.timestamp.localeCompare(cursorTimestamp);
+               // Because it's descending, we want entries that are OLDER ($smaller timestamp)
+               // or SAME timestamp but smaller ID.
+               if (tsCmp !== 0) return tsCmp < 0; // older
+               return entry.id.localeCompare(cursorId) < 0; // smaller id
+             });
           }
         }
-        return true;
-      })
-      .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
-      .slice(0, limit);
+      }
+    }
 
-    return results.map((entry) => cloneValue(entry));
+    const hasNext = results.length > limit;
+    const paginatedResults = results.slice(0, limit);
+
+    let nextCursor: string | null = null;
+    if (hasNext && paginatedResults.length > 0) {
+      const lastEntry = paginatedResults[paginatedResults.length - 1];
+      nextCursor = Buffer.from(`${lastEntry.timestamp}|${lastEntry.id}`).toString("base64");
+    }
+
+    return {
+      data: paginatedResults.map((entry) => cloneValue(entry)),
+      hasNext,
+      nextCursor,
+      total,
+    };
   }
 
   exportRows(filters: AuditListFilters = {}): AuditExportRow[] {
-    return this.list(filters).map((entry) => ({
-      action: entry.action,
-      actorId: entry.actor.id,
-      actorRole: entry.actor.role,
-      afterHash: entry.afterHash,
-      beforeHash: entry.beforeHash,
-      diffHash: entry.diffHash,
-      entryHash: entry.entryHash,
-      id: entry.id,
-      metadata: entry.metadata,
-      prevHash: entry.prevHash,
-      redactedTargetAccount: redactTargetAccount(entry.target.account),
-      redactionPolicy: "mask-target-account",
-      requestId: entry.requestId,
-      retentionUntil: entry.retentionUntil,
-      targetId: entry.target.id,
-      targetType: entry.target.type,
-      timestamp: entry.timestamp,
-    }));
+    return this.getPaginated({ ...filters, limit: Number.MAX_SAFE_INTEGER }).data
+      .map((entry) => this.toExportRow(entry));
+  }
+
+  /**
+   * Export rows for archived entries (soft-archived by retention plus
+   * deep-archived cold-storage entries). Uses the same redacted projection as
+   * `exportRows` so archived downloads never leak unredacted target accounts.
+   *
+   * Rows are ordered newest-first and capped by `limit` (1–250, default 250)
+   * for deterministic, bounded output.
+   */
+  exportArchivedRows(limit = 250): AuditExportRow[] {
+    const rows: AuditExportRow[] = [];
+    for (const entry of this.archivedEntries) {
+      rows.push(this.toExportRow(entry));
+    }
+    for (const deepEntry of this.deepArchivedEntries) {
+      rows.push(this.toExportRow(deepEntry.entry));
+    }
+    const capped = Math.min(Math.max(limit, 1), 250);
+    return rows
+      .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
+      .slice(0, capped);
   }
 
   archiveExpiredEntries(referenceTimestamp: string | Date = new Date().toISOString()): AuditEntry[] {
@@ -304,206 +364,108 @@ export class AppendOnlyAuditLogStore {
     };
   }
 
-  deepArchive(cutoffTimestamp: string): DeepArchiveResult {
+  deepArchive(cutoffTimestamp: string, execute = false): DeepArchiveResult {
     const cutoffMs = Date.parse(cutoffTimestamp);
     if (!Number.isFinite(cutoffMs)) {
-      throw new Error("INVALID_ARCHIVE_CUTOFF");
+      throw new Error("INVALID_PURGE_CUTOFF");
     }
 
-    const chainIntactBefore = this.assertIntegrity();
-    const archivedAt = new Date().toISOString();
+    const candidates = this.archivedEntries.filter((entry) => Date.parse(entry.timestamp) < cutoffMs);
+    const retained = this.archivedEntries.filter((entry) => Date.parse(entry.timestamp) >= cutoffMs);
 
-    const toArchive: AuditEntry[] = [];
-
-    const remainingArchived: AuditEntry[] = [];
-    for (const entry of this.archivedEntries) {
-      if (Date.parse(entry.timestamp) < cutoffMs) {
-        toArchive.push(entry);
-      } else {
-        remainingArchived.push(entry);
-      }
+    if (execute && candidates.length > 0) {
+      this.archivedEntries.splice(0, this.archivedEntries.length, ...retained);
+      this.deepArchivedEntries.push(
+        ...candidates.map((entry) => ({
+          entry: deepFreeze(cloneValue(entry)),
+          archivedAt: new Date().toISOString(),
+        })),
+      );
     }
-
-    const remainingEntries: AuditEntry[] = [];
-    for (const entry of this.entries) {
-      if (Date.parse(entry.timestamp) < cutoffMs) {
-        toArchive.push(entry);
-      } else {
-        remainingEntries.push(entry);
-      }
-    }
-
-    if (toArchive.length === 0) {
-      return {
-        archivedCount: 0,
-        archivedEntryIds: [],
-        chainIntactBefore,
-        chainIntactAfter: chainIntactBefore,
-        cutoffTimestamp: new Date(cutoffMs).toISOString(),
-        archivedAt,
-      };
-    }
-
-    const rebased = this.rebaseChain([...remainingArchived, ...remainingEntries]);
-
-    this.archivedEntries.splice(
-      0,
-      this.archivedEntries.length,
-      ...rebased.slice(0, remainingArchived.length),
-    );
-    this.entries.splice(
-      0,
-      this.entries.length,
-      ...rebased.slice(remainingArchived.length),
-    );
-
-    this.deepArchivedEntries.push(
-      ...toArchive.map((entry) => ({
-        entry: cloneValue(entry),
-        archivedAt,
-      })),
-    );
-
-    const chainIntactAfter = this.assertIntegrity();
 
     return {
-      archivedCount: toArchive.length,
-      archivedEntryIds: toArchive.map((e) => e.id),
-      chainIntactBefore,
-      chainIntactAfter,
+      archivedEntries: candidates.length,
+      archivedIds: candidates.map((entry) => entry.id),
       cutoffTimestamp: new Date(cutoffMs).toISOString(),
-      archivedAt,
+      executed: execute,
+      retainedEntries: retained.length,
     };
   }
 
-  getDeepArchivedEntries(): DeepArchiveEntry[] {
-    return this.deepArchivedEntries.map((de) => ({
-      entry: cloneValue(de.entry),
-      archivedAt: de.archivedAt,
-    }));
-  }
-
-  reset(seedEntries: AuditEntryInput[] = defaultSeedAuditEntries) {
-    this.entries.splice(0, this.entries.length);
-    this.archivedEntries.splice(0, this.archivedEntries.length);
-    this.deepArchivedEntries.splice(0, this.deepArchivedEntries.length);
-    for (const entry of seedEntries) {
-      this.append(entry);
-    }
-  }
-
   private rebaseChain(entries: AuditEntry[]): AuditEntry[] {
-    let previousHash: string | null = null;
-
+    let prevHash: string | null = null;
     return entries.map((entry) => {
-      const nextEntry = cloneValue(entry);
-      nextEntry.prevHash = previousHash;
-      nextEntry.entryHash = hashValue({
-        action: nextEntry.action,
-        actor: nextEntry.actor,
-        afterHash: nextEntry.afterHash,
-        beforeHash: nextEntry.beforeHash,
-        diffHash: nextEntry.diffHash,
-        metadata: nextEntry.metadata ?? null,
-        prevHash: nextEntry.prevHash,
-        requestId: nextEntry.requestId,
-        target: nextEntry.target,
-        timestamp: nextEntry.timestamp,
+      const next = { ...entry, prevHash } as AuditEntry;
+      const entryHash = hashValue({
+        action: next.action,
+        actor: next.actor,
+        afterHash: next.afterHash,
+        beforeHash: next.beforeHash,
+        diffHash: next.diffHash,
+        metadata: next.metadata ?? null,
+        prevHash: next.prevHash,
+        requestId: next.requestId,
+        target: next.target,
+        timestamp: next.timestamp,
       });
-      previousHash = nextEntry.entryHash;
-      return deepFreeze(nextEntry);
+      prevHash = entryHash;
+      return deepFreeze({ ...next, entryHash });
     });
   }
-}
 
-function normalizeRole(role: string | null): AuditActorRole | null {
-  if (!role) {
-    return null;
+  private toExportRow(entry: AuditEntry): AuditExportRow {
+    return {
+      action: entry.action,
+      actorId: entry.actor.id,
+      actorRole: entry.actor.role,
+      id: entry.id,
+      requestId: entry.requestId,
+      targetAccount: redactTargetAccount(entry.target.account),
+      targetId: entry.target.id,
+      timestamp: entry.timestamp,
+    };
   }
-  return VALID_ROLES.has(role as AuditActorRole) ? (role as AuditActorRole) : null;
 }
 
-export function buildRequestId(request: Request): string {
-  return (
-    request.headers?.get?.("x-request-id") ??
-    request.headers?.get?.("x-vercel-id") ??
-    request.headers?.get?.("idempotency-key") ??
-    `mock-request-${randomUUID()}`
-  );
-}
+export const auditLogStore = new AppendOnlyAuditLogStore();
 
-export function resolveAuditActor(request: Request): AuditActor {
-  const authenticatedActor = tryAuthenticateRequest(request);
-  if (authenticatedActor) {
-    return { id: authenticatedActor.actorId, role: authenticatedActor.role };
-  }
-
-  const headerRole = normalizeRole(request.headers?.get?.("x-streampay-actor-role") ?? null);
-  const headerActorId = request.headers?.get?.("x-streampay-actor-id") ?? null;
-  if (headerRole && headerActorId) {
-    return { id: headerActorId, role: headerRole };
-  }
-
-  return { id: "system:mock", role: "system" };
-}
-
-export function recordPrivilegedStreamAuditEvent(args: {
-  request: Request;
+export interface PrivilegedStreamAuditEventInput {
   action: string;
-  before: Record<string, unknown>;
-  after: Record<string, unknown>;
-  streamId: string;
-  targetAccount?: string;
+  streamId?: string;
+  tenantId?: string;
+  actor?: AuditActor | null;
+  before?: unknown;
+  after?: unknown;
   metadata?: Record<string, AuditMetadataValue>;
-}): AuditEntry {
+  target?: { id?: string; type?: string; account?: string };
+  requestId?: string;
+}
+
+export function recordPrivilegedStreamAuditEvent(input: PrivilegedStreamAuditEventInput): AuditEntry {
+  const actorId = input.actor?.id ?? "system";
+  const role = ((input.actor?.role as AuditActorRole | undefined) ?? "system");
+  const targetId = input.target?.id ?? input.streamId ?? "unknown";
+  const targetType = input.target?.type ?? "stream";
+  const metadata = {
+    ...(input.metadata ?? {}),
+    ...(input.tenantId ? { tenantId: input.tenantId } : {}),
+  } as Record<string, AuditMetadataValue>;
+
   return auditLogStore.append({
-    action: args.action,
-    actor: resolveAuditActor(args.request),
-    after: args.after,
-    before: args.before,
-    metadata: attachRequestFingerprintMetadata(args.request, args.metadata),
-    requestId: buildRequestId(args.request),
+    action: input.action,
+    actor: {
+      id: actorId,
+      role: VALID_ROLES.has(role) ? role : "system",
+      account: input.actor?.account,
+    },
+    after: input.after as any,
+    before: input.before as any,
+    metadata,
+    requestId: input.requestId ?? "",
     target: {
-      account: args.targetAccount,
-      id: args.streamId,
-      type: "stream",
+      id: targetId,
+      type: targetType,
+      account: input.target?.account,
     },
   });
 }
-
-const defaultSeedAuditEntries: AuditEntryInput[] = [
-  {
-    action: "stream.stop.bootstrap",
-    actor: { id: "system:seed", role: "system" },
-    after: {
-      nextAction: "withdraw",
-      status: "ended",
-      streamId: "stream-yusuf",
-    },
-    before: {
-      nextAction: "pause",
-      status: "active",
-      streamId: "stream-yusuf",
-    },
-    metadata: {
-      note: "synthetic bootstrap event",
-    },
-    requestId: "seed-request-stream-yusuf",
-    target: {
-      account: "acct_stream_yusuf_demo",
-      id: "stream-yusuf",
-      type: "stream",
-    },
-    timestamp: "2026-04-27T20:00:00Z",
-  },
-];
-
-export const auditLogStore = new AppendOnlyAuditLogStore();
-auditLogStore.reset();
-
-export function resetAuditLogStore() {
-  auditLogStore.reset();
-}
-
-// Register the Node-side audit hook for middleware fingerprint capture.
-import '@/lib/fingerprint-audit';
