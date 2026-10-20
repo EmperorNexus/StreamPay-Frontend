@@ -10,8 +10,9 @@ use soroban_sdk::{contractevent, symbol_short, Address, BytesN, Env, Symbol};
 
 /// Emitted when a new stream is created (topic: `"stream"`, sub-topic: `"created"`).
 ///
-/// Contains the stream's ID, sender, recipient, token address, total amount, and
-/// the ledger timestamp at creation.
+/// Contains the stream's ID, sender, recipient, token address, total amount,
+/// per-stream fee (in basis points), stream duration in seconds, and the
+/// ledger timestamp at creation.
 #[contractevent(topics = ["stream", "created"], data_format = "vec")]
 pub struct StreamCreated {
     pub stream_id: u64,
@@ -19,6 +20,8 @@ pub struct StreamCreated {
     pub recipient: Address,
     pub token: Address,
     pub total_amount: i128,
+    pub fee_bps: u32,
+    pub duration: u64,
     pub timestamp: u64,
 }
 
@@ -141,6 +144,8 @@ pub fn created(
     recipient: &Address,
     token: &Address,
     total_amount: i128,
+    fee_bps: u32,
+    duration: u64,
     timestamp: u64,
 ) {
     StreamCreated {
@@ -149,6 +154,8 @@ pub fn created(
         recipient: recipient.clone(),
         token: token.clone(),
         total_amount,
+        fee_bps,
+        duration,
         timestamp,
     }
     .publish(env);
@@ -191,7 +198,7 @@ pub fn paused(env: &Env, stream_id: u64, sender: &Address, pause_time: u64, time
     StreamPaused {
         stream_id,
         sender: sender.clone(),
-        paused_at,
+        paused_at: pause_time,
         timestamp,
     }
     .publish(env);
@@ -336,5 +343,50 @@ pub fn fee_charged(
     env.events().publish(
         (symbol_short!("stream"), symbol_short!("fee")),
         (stream_id, fee_amount, fee_bps, collector.clone(), timestamp),
+    );
+}
+
+/// Emitted when the admin updates the per-user cooloff duration via
+/// [`Contract::set_cooloff_duration`].
+///
+/// Topics: `("stream", "cooloff_set")`.
+/// Data: `(admin, duration, timestamp)`.
+pub fn cooloff_duration_set(env: &Env, admin: &Address, duration: u64, timestamp: u64) {
+    env.events().publish(
+        (symbol_short!("stream"), symbol_short!("cooloff")),
+        (admin.clone(), duration, timestamp),
+    );
+}
+
+/// Emitted when the admin successfully sweeps accumulated protocol fees into
+/// the treasury (fee collector address).
+///
+/// Topics: `("stream", "fees_swept")`.
+/// Data: `(streams_swept, total_amount, collector, caller, timestamp)`.
+///
+/// | Field           | Type      | Description                                        |
+/// |-----------------|-----------|----------------------------------------------------|
+/// | `streams_swept` | `u32`     | Number of streams that had a non-zero fee balance. |
+/// | `total_amount`  | `i128`    | Total tokens transferred to the fee collector.     |
+/// | `collector`     | `Address` | Destination of the swept funds.                    |
+/// | `caller`        | `Address` | Admin address that initiated the sweep.            |
+/// | `timestamp`     | `u64`     | Ledger timestamp at the time of the sweep.         |
+pub fn fees_swept(
+    env: &Env,
+    streams_swept: u32,
+    total_amount: i128,
+    collector: &Address,
+    caller: &Address,
+    timestamp: u64,
+) {
+    env.events().publish(
+        (symbol_short!("stream"), symbol_short!("swept")),
+        (
+            streams_swept,
+            total_amount,
+            collector.clone(),
+            caller.clone(),
+            timestamp,
+        ),
     );
 }

@@ -53,9 +53,11 @@ import {
   setIdempotency,
   withLock,
 } from "@/app/lib/db";
+import { streamsRateLimit } from "@/src/middleware/rateLimit";
 import { getCorrelationContext, logger } from "@/app/lib/logger";
 import { checkStreamOrgPolicy } from "@/app/lib/org-policy";
 import { recordPrivilegedStreamAuditEvent } from "@/app/lib/audit-log";
+import { appendStreamHistoryEvent } from "@/app/lib/stream-history-writer";
 
 function createErrorResponse(code: string, message: string, status: number) {
   const context = getCorrelationContext();
@@ -74,6 +76,12 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+
+  // Rate limit guard
+  const rateCheck = await streamsRateLimit(req, "POST", `/api/streams/${id}/pause`);
+  if (!rateCheck.allowed) {
+    return rateCheck.response;
+  }
 
   const idempotencyKey = getHeader(req, "Idempotency-Key");
   const token = idempotencyKey
@@ -176,6 +184,15 @@ export async function POST(
     };
 
     db.streams.set(id, updated);
+
+    appendStreamHistoryEvent({
+      streamId: id,
+      type: "paused",
+      fromStatus: "active",
+      toStatus: "paused",
+      at: now,
+      actorWallet: actorAddress,
+    });
 
     recordPrivilegedStreamAuditEvent({
       action: "stream.pause",

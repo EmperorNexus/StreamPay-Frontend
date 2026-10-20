@@ -6,6 +6,26 @@
  * Stellar network, and troubleshooting local-dev issues.
  */
 
+import { SHORTCUT_GROUPS, formatShortcutKeys, getShortcut } from "@/lib/shortcuts";
+
+/** Keys for a single shortcut id, e.g. "⌘/Ctrl + K". */
+function keysFor(id: string): string {
+  return formatShortcutKeys(getShortcut(id).keys);
+}
+
+/**
+ * The full reference, generated from the registry so the FAQ can never fall
+ * behind the `?` overlay or the in-form hints.
+ */
+function fullShortcutReference(): string {
+  return SHORTCUT_GROUPS.map((group) => {
+    const entries = group.shortcuts
+      .map((shortcut) => `${formatShortcutKeys(shortcut.keys)} ${shortcut.description}`)
+      .join("; ");
+    return `${group.label} — ${entries}.`;
+  }).join(" ");
+}
+
 export const metadata = {
   title: "Help & FAQ — StreamPay",
   description:
@@ -52,6 +72,24 @@ const FAQ_SECTIONS: FaqSection[] = [
         question: "How do I switch between testnet and mainnet?",
         answer:
           "The network is selected at deployment time via the STELLAR_NETWORK environment variable (\"testnet\" or \"mainnet\"). Testnet assets are clearly labelled in the UI to prevent accidental mainnet operations. Contact your administrator to change the active network for a given deployment.",
+      },
+    ],
+  },
+  {
+    id: "keyboard-shortcuts",
+    title: "Keyboard Shortcuts",
+    items: [
+      {
+        id: "shortcuts-overlay",
+        question: "How do I view all available keyboard shortcuts?",
+        answer:
+          `Press ${keysFor("global.toggle-overlay")} anywhere in the app to open the Keyboard Shortcuts overlay, which lists every available shortcut grouped by where it applies. Press ${keysFor("global.toggle-overlay")} again or ${keysFor("global.close-dialogs")} to close it. Press ${keysFor("global.command-palette")} to open the command palette for searching streams. This page, the overlay and the in-form hints all render from one registry (lib/shortcuts.ts), so they cannot disagree.`,
+      },
+      {
+        id: "shortcuts-list",
+        question: "What keyboard shortcuts are available?",
+        answer:
+          `${fullShortcutReference()} Shortcuts in a scoped group are only live where that scope applies: the Create stream form shortcuts do nothing outside the form, and the Receipt card shortcuts only work while a receipt is on screen. Single-key shortcuts such as ${keysFor("receipt-card.toggle-mask")} and ${keysFor("receipt-card.copy")} are ignored while you are typing in a text field.`,
       },
     ],
   },

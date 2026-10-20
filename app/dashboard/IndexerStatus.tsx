@@ -560,4 +560,22 @@ export function IndexerStatus({ data, className = "" }: IndexerStatusProps) {
   );
 }
 
+/**
+ * Bucket a lag value into a named severity tier.
+ * Used to decide when lag changes are significant enough to announce.
+ *
+ * | Bucket    | Lag range   |
+ * |-----------|-------------|
+ * | `"ok"`    | 0 – 2       |
+ * | `"warn"`  | 3 – 10      |
+ * | `"high"`  | > 10        |
+ *
+ * @internal exported for testing only
+ */
+export function lagBucket(lag: number): "ok" | "warn" | "high" {
+  if (lag <= 2) return "ok";
+  if (lag <= 10) return "warn";
+  return "high";
+}
+
 export default IndexerStatus;

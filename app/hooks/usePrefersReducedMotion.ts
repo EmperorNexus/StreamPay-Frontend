@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 
 /**
-@media query constant used for the initial state and the live listener.
-*/
+ * @media query constant used for the initial state and the live listener.
+ */
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
 /**
@@ -19,7 +19,7 @@ export function usePrefersReducedMotion(): boolean {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
       return false;
     }
-    return window.matchMedia(RETUCED_MOTION_QUERY).matches;
+    return window.matchMedia(REDUCED_MOTION_QUERY).matches;
   });
 
   useEffect(() => {

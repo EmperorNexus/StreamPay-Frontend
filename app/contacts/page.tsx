@@ -28,10 +28,20 @@ export interface Contact {
 
 const CONTACTS_KEY = "streampay_contacts";
 
+// Sample address book shown on a visitor's first visit so the demo is populated.
+// Once the visitor saves, edits or deletes a contact their own list is persisted.
+// Not applied under Jest so the empty-state behaviour stays testable.
+const DEMO_CONTACTS: Contact[] = [
+  { id: "demo-ada", label: "Ada Creative Studio", address: "GAHJJJKMOKYE4RVPZEWZTKH5FVI4PA3VL7GK2LFNUBSGBV3JKAKZK7GQ", memo: "Design retainer, paid monthly", createdAt: "2026-04-01T09:00:00.000Z" },
+  { id: "demo-kemi", label: "Kemi Onboarding Support", address: "GBVZZ5QKXB4T2YXQXDXQ2ZQKXB4T2YXQXDXQ2ZQKXB4T2YXQXDXQ2ZQK", memo: "Weekly onboarding help", createdAt: "2026-04-10T11:00:00.000Z" },
+  { id: "demo-yusuf", label: "Yusuf QA Partnership", address: "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGYWDEAVQBMJ7WGNB55IAAQ", federationAddress: "yusuf*qa.example.com", createdAt: "2026-04-15T08:00:00.000Z" },
+];
+
 function loadContacts(): Contact[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(CONTACTS_KEY);
+    if (raw === null && process.env.NODE_ENV !== "test") return DEMO_CONTACTS;
     return raw ? (JSON.parse(raw) as Contact[]) : [];
   } catch {
     return [];

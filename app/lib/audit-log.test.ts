@@ -107,6 +107,109 @@ describe("AppendOnlyAuditLogStore", () => {
     expect(row.redactionPolicy).toBe("mask-target-account");
   });
 
+  describe("list filtering", () => {
+    let store: AppendOnlyAuditLogStore;
+
+    beforeEach(() => {
+      store = new AppendOnlyAuditLogStore();
+      store.append({
+        action: "stream.create",
+        actor: { id: "admin-1", role: "admin" },
+        after: { status: "active" },
+        requestId: "req-filter-1",
+        target: { account: "acct_org1", id: "stream-1", type: "stream" },
+        timestamp: "2026-04-28T10:00:00.000Z",
+        metadata: { orgId: "org-alpha" },
+      });
+      store.append({
+        action: "stream.settle",
+        actor: { id: "admin-2", role: "admin" },
+        after: { status: "ended" },
+        before: { status: "active" },
+        requestId: "req-filter-2",
+        target: { account: "acct_org2", id: "stream-2", type: "stream" },
+        timestamp: "2026-05-01T12:00:00.000Z",
+        metadata: { orgId: "org-beta" },
+      });
+      store.append({
+        action: "stream.pause",
+        actor: { id: "compliance-1", role: "compliance" },
+        after: { status: "paused" },
+        before: { status: "active" },
+        requestId: "req-filter-3",
+        target: { account: "acct_org1_admin", id: "stream-3", type: "stream" },
+        timestamp: "2026-05-15T08:00:00.000Z",
+        metadata: { orgId: "org-alpha", region: "us" },
+      });
+    });
+
+    it("filters list by orgId via metadata", () => {
+      const results = store.list({ orgId: "org-alpha" });
+      expect(results).toHaveLength(2);
+      expect(results.every((e) => e.metadata?.orgId === "org-alpha")).toBe(true);
+    });
+
+    it("filters list by orgId – no match", () => {
+      const results = store.list({ orgId: "org-nonexistent" });
+      expect(results).toHaveLength(0);
+    });
+
+    it("filters list by startDate (inclusive lower bound)", () => {
+      const results = store.list({ startDate: "2026-05-01T00:00:00.000Z" });
+      expect(results).toHaveLength(2);
+    });
+
+    it("filters list by endDate (inclusive upper bound)", () => {
+      const results = store.list({ endDate: "2026-04-30T23:59:59.999Z" });
+      expect(results).toHaveLength(1);
+    });
+
+    it("filters list by both startDate and endDate", () => {
+      const results = store.list({
+        startDate: "2026-04-28T00:00:00.000Z",
+        endDate: "2026-04-30T23:59:59.999Z",
+      });
+      expect(results).toHaveLength(1);
+      expect(results[0].action).toBe("stream.create");
+    });
+
+    it("filters list by orgId combined with action", () => {
+      const results = store.list({ orgId: "org-alpha", action: "stream.pause" });
+      expect(results).toHaveLength(1);
+      expect(results[0].action).toBe("stream.pause");
+    });
+
+    it("exportRows respects orgId filter", () => {
+      const rows = store.exportRows({ orgId: "org-beta" });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].action).toBe("stream.settle");
+    });
+
+    it("exportRows respects startDate filter", () => {
+      const rows = store.exportRows({ startDate: "2026-05-01T00:00:00.000Z" });
+      expect(rows).toHaveLength(2);
+    });
+
+    it("exportRows respects endDate filter", () => {
+      const rows = store.exportRows({ endDate: "2026-04-30T23:59:59.999Z" });
+      expect(rows).toHaveLength(1);
+    });
+
+    it("orgId filter handles entries without metadata", () => {
+      store.append({
+        action: "stream.withdraw",
+        actor: { id: "admin-1", role: "admin" },
+        after: { status: "withdrawn" },
+        before: { status: "ended" },
+        requestId: "req-filter-no-meta",
+        target: { account: "acct_nometa", id: "stream-4", type: "stream" },
+        timestamp: "2026-06-01T10:00:00.000Z",
+      });
+      const results = store.list({ orgId: "org-alpha" });
+      expect(results).toHaveLength(2);
+    });
+  });
+
   describe("deepArchive", () => {
     it("archives entries older than the cutoff timestamp", () => {
       const store = new AppendOnlyAuditLogStore();
@@ -308,6 +411,97 @@ describe("AppendOnlyAuditLogStore", () => {
         entry1.id,
         entry2.id,
       ]);
+    });
+  });
+
+  describe("exportArchivedRows", () => {
+    function makeStore() {
+      const store = new AppendOnlyAuditLogStore();
+      store.append({
+        action: "stream.settle",
+        actor: { id: "ops-admin-1", role: "admin" },
+        after: { status: "ended" },
+        before: { status: "active" },
+        requestId: "req-arch-old",
+        target: { account: "acct_sensitive_old", id: "stream-1", type: "stream" },
+        timestamp: "2024-01-01T10:00:00.000Z",
+      });
+      store.append({
+        action: "stream.withdraw",
+        actor: { id: "ops-admin-1", role: "admin" },
+        after: { status: "withdrawn" },
+        before: { status: "ended" },
+        requestId: "req-arch-new",
+        target: { account: "acct_demo_001", id: "stream-2", type: "stream" },
+        timestamp: "2024-01-02T10:00:00.000Z",
+      });
+      return store;
+    }
+
+    it("returns archived entries (soft + deep) with the redacted projection", () => {
+      const store = makeStore();
+
+      // Soft-archive the older entry via retention expiry.
+      store.archiveExpiredEntries("2024-01-15T00:00:00.000Z");
+      // Deep-archive the soft-archived entry into cold storage.
+      store.deepArchive("2025-01-01T00:00:00.000Z");
+
+      const rows = store.exportArchivedRows();
+
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.requestId)).toEqual([
+        "req-arch-new",
+        "req-arch-old",
+      ]);
+      for (const row of rows) {
+        expect(row.redactionPolicy).toBe("mask-target-account");
+        expect(row.redactedTargetAccount).toBeDefined();
+        expect(row.redactedTargetAccount).not.toContain("acct_");
+      }
+      expect(rows.every((row) => row.entryHash)).toBe(true);
+    });
+
+    it("redacts target account labels in archived downloads", () => {
+      const store = makeStore();
+      store.archiveExpiredEntries("2024-01-15T00:00:00.000Z");
+      store.deepArchive("2025-01-01T00:00:00.000Z");
+
+      const rows = store.exportArchivedRows();
+      const sensitive = rows.find((row) => row.requestId === "req-arch-old");
+      expect(sensitive?.redactedTargetAccount).not.toBe("acct_sensitive_old");
+      expect(sensitive?.redactedTargetAccount).toMatch(/\*{3}/);
+    });
+
+    it("orders rows newest-first and caps by limit", () => {
+      const store = makeStore();
+      store.archiveExpiredEntries("2024-01-15T00:00:00.000Z");
+      store.deepArchive("2025-01-01T00:00:00.000Z");
+
+      const rows = store.exportArchivedRows(1);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].requestId).toBe("req-arch-new");
+    });
+
+    it("clamps the limit to 1..250", () => {
+      const store = makeStore();
+      store.archiveExpiredEntries("2024-01-15T00:00:00.000Z");
+      store.deepArchive("2025-01-01T00:00:00.000Z");
+
+      expect(store.exportArchivedRows(0)).toHaveLength(1);
+      expect(store.exportArchivedRows(9999)).toHaveLength(2);
+    });
+
+    it("returns an empty array when nothing is archived", () => {
+      const store = new AppendOnlyAuditLogStore();
+      expect(store.exportArchivedRows()).toEqual([]);
+    });
+
+    it("is deterministic for identical state", () => {
+      const store = makeStore();
+      store.archiveExpiredEntries("2024-01-15T00:00:00.000Z");
+      store.deepArchive("2025-01-01T00:00:00.000Z");
+
+      expect(store.exportArchivedRows()).toEqual(store.exportArchivedRows());
     });
   });
 });
