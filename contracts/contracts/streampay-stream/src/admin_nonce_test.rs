@@ -92,7 +92,7 @@ mod admin_nonce_tests {
                 duration: 4_500,
                 last_update: 1_000,
                 status: StreamStatus::Active,
-                pause_time: 0,
+                paused_at: 0,
                 total_paused_duration: 0,
             };
             self.env.as_contract(&self.contract_id, || {
@@ -161,12 +161,63 @@ mod admin_nonce_tests {
 
         ctx.client()
             .admin_override(&ctx.admin, &0, &stream_id, &10_000);
+
+        ctx.env.ledger().with_mut(|l| {
+            l.timestamp += admin::ADMIN_COOLDOWN_SECONDS;
+        });
+
         ctx.client()
             .admin_override(&ctx.admin, &1, &stream_id, &15_000);
+
+        ctx.env.ledger().with_mut(|l| {
+            l.timestamp += admin::ADMIN_COOLDOWN_SECONDS;
+        });
+
         ctx.client()
             .admin_override(&ctx.admin, &2, &stream_id, &20_000);
 
         assert_eq!(ctx.client().get_admin_nonce(), 3);
+    }
+
+    #[test]
+    fn admin_override_cooldown_enforced() {
+        let ctx = Ctx::new();
+        let stream_id = ctx.insert_active_stream();
+
+        // First call succeeds
+        ctx.client()
+            .admin_override(&ctx.admin, &0, &stream_id, &10_000);
+
+        // Immediate second call should fail with AdminCooldown
+        let err = ctx
+            .client()
+            .try_admin_override(&ctx.admin, &1, &stream_id, &15_000)
+            .expect_err("cooldown must block rapid admin actions");
+
+        assert_eq!(err, Ok(Error::AdminCooldown));
+
+        // Advance time just before the cooldown expires, should still fail
+        ctx.env.ledger().with_mut(|l| {
+            l.timestamp += admin::ADMIN_COOLDOWN_SECONDS - 1;
+        });
+
+        let err_almost = ctx
+            .client()
+            .try_admin_override(&ctx.admin, &1, &stream_id, &15_000)
+            .expect_err("cooldown must block until fully elapsed");
+
+        assert_eq!(err_almost, Ok(Error::AdminCooldown));
+
+        // Advance time past the cooldown
+        ctx.env.ledger().with_mut(|l| {
+            l.timestamp += 1;
+        });
+
+        // Should succeed now
+        ctx.client()
+            .admin_override(&ctx.admin, &1, &stream_id, &15_000);
+
+        assert_eq!(ctx.client().get_admin_nonce(), 2);
     }
 
     // ──────────────────────────────────────────────────────────────────────────

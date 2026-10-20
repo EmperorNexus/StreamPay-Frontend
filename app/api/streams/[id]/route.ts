@@ -123,7 +123,7 @@ export async function GET(
   //       (prevents cross-tenant cache poisoning via shared proxies).
   const etag = computeETag(tenant, stream);
 
-  // Short-circuit on `If-None-Match` (RFC3232 §3.2).
+  // Short-circuit on `If-None-Match` (RFC 7232 §3.2).
   // 304 carries no body but must still emit ETag + Cache-Control so the
   // client can update its own freshness bookkeeping.
   const ifNoneMatch = request.headers.get("if-none-match");

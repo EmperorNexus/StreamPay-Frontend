@@ -20,6 +20,7 @@ Linear payment streams on Stellar/Soroban.
 | `settle` | Yes | `stream.recipient` | Ends a stream and releases all remaining funds to recipient. |
 | `get_stream` | No | None | Returns the stream record. |
 | `withdrawable` | No | None | Returns the currently withdrawable amount. |
+| `claim_drip` | No | None | Returns the unsettled accrual (vested minus released) — a convenience alias for `withdrawable`. |
 | `stream_balance` | No | None | Returns the vested balance at the current time. |
 | `stream_snapshot` | No | None | Captures a `StreamSnapshot` (vested, released, locked, withdrawable, status) at a given ledger timestamp. |
 | `diff_snapshots` | No | None | Computes the field-by-field `SnapshotDiff` delta between two `StreamSnapshot` values from the same stream. |
@@ -29,6 +30,9 @@ Linear payment streams on Stellar/Soroban.
 | `list_streams_by_status` | No | None | Returns a paginated page of streams filtered by status. |
 | `list_streams_recipient_status` | No | None | Returns a paginated page of streams filtered by recipient and status (compound). |
 | `list_streams_sender_status` | No | None | Returns a paginated page of streams filtered by sender and status (compound). |
+| `set_cooloff_duration` | Yes | `admin` | Sets the per-user cooloff duration (in seconds) between stream creations. |
+| `get_cooloff_duration` | No | None | Returns the current per-user cooloff duration in seconds. |
+| `get_cooloff_until` | No | None | Returns the timestamp until which a sender is blocked by cooloff. |
 
 ## Paginated Stream Enumeration
 
@@ -91,6 +95,7 @@ data     = vec-encoded payload fields
 | `cancelled` | `cancel_stream`       | `stream_id`, `cancelled_by`, `returned_amount`, `released_amount`, `timestamp` |
 | `amended`   | `amend_stream`        | `stream_id`, `amended_by`, `new_rate_per_second`, `new_end_time`, `timestamp` |
 | `upgraded`  | `upgrade`             | `new_wasm_hash` (topics: `"StreamPay"/"upgraded"`) |
+| `cooloff_duration_set` | `set_cooloff_duration` | `admin`, `duration`, `timestamp` (topics: `"stream"/"cooloff"`) |
 
 When a `withdraw` fully drains the stream it emits two events in order:
 `withdrawn` then `settled`.

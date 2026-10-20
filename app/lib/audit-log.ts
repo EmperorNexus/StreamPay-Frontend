@@ -210,7 +210,7 @@ export class AppendOnlyAuditLogStore {
           } else {
              results = results.filter((entry) => {
                const tsCmp = entry.timestamp.localeCompare(cursorTimestamp);
-               // Because it's descending, we want entries that are OLDER ($smaller timestamp)
+               // Because it's descending, we want entries that are OLDER (smaller timestamp)
                // or SAME timestamp but smaller ID.
                if (tsCmp !== 0) return tsCmp < 0; // older
                return entry.id.localeCompare(cursorId) < 0; // smaller id
@@ -392,6 +392,22 @@ export class AppendOnlyAuditLogStore {
     };
   }
 
+  getDeepArchivedEntries(): DeepArchiveEntry[] {
+    return this.deepArchivedEntries.map((de) => ({
+      entry: cloneValue(de.entry),
+      archivedAt: de.archivedAt,
+    }));
+  }
+
+  reset(seedEntries: AuditEntryInput[] = defaultSeedAuditEntries) {
+    this.entries.splice(0, this.entries.length);
+    this.archivedEntries.splice(0, this.archivedEntries.length);
+    this.deepArchivedEntries.splice(0, this.deepArchivedEntries.length);
+    for (const entry of seedEntries) {
+      this.append(entry);
+    }
+  }
+
   private rebaseChain(entries: AuditEntry[]): AuditEntry[] {
     let prevHash: string | null = null;
     return entries.map((entry) => {
@@ -418,10 +434,19 @@ export class AppendOnlyAuditLogStore {
       action: entry.action,
       actorId: entry.actor.id,
       actorRole: entry.actor.role,
+      afterHash: entry.afterHash,
+      beforeHash: entry.beforeHash,
+      diffHash: entry.diffHash,
+      entryHash: entry.entryHash,
       id: entry.id,
+      metadata: entry.metadata,
+      prevHash: entry.prevHash,
+      redactedTargetAccount: redactTargetAccount(entry.target.account),
+      redactionPolicy: "mask-target-account",
       requestId: entry.requestId,
-      targetAccount: redactTargetAccount(entry.target.account),
+      retentionUntil: entry.retentionUntil,
       targetId: entry.target.id,
+      targetType: entry.target.type,
       timestamp: entry.timestamp,
     };
   }
