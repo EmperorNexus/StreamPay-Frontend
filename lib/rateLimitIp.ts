@@ -28,12 +28,6 @@ export interface WalletRateLimitResult {
 export function resolveCorrelationId(req: NextRequest): string {
   return resolveRequestId(req.headers);
 }
-    req.headers.get("x-request-id") ?? req.headers.get("x-correlation-id");
-  if (forwarded && forwarded.trim().length > 0) {
-    return forwarded.trim();
-  }
-  return `req_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 10)}`;
-}
 
 /**
  * Extract client IP from proxy headers.
